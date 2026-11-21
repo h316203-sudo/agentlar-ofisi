@@ -6,6 +6,9 @@ const PORT = process.env.PORT || 3200;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
 const CLAUDE_API_KEY = process.env.ANTHROPIC_API_KEY || "";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+const AI_GATEWAY_URL = (process.env.AI_GATEWAY_URL || "").replace(/\\/+$/, "");
+const AI_GATEWAY_TOKEN = process.env.AI_GATEWAY_TOKEN || "";
+const AI_GATEWAY_MODEL = process.env.AI_GATEWAY_MODEL || "auto";
 const DATA_FILE = path.join(__dirname, "data.json");
 
 const agents = [
@@ -30,7 +33,7 @@ async function askClaude(prompt){
  const r=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"content-type":"application/json","x-api-key":CLAUDE_API_KEY,"anthropic-version":"2023-06-01"},body:JSON.stringify({model:process.env.CLAUDE_MODEL||"claude-sonnet-4-5",max_tokens:1600,system:"Siz AGENTLAR OFISI tizimidagi yordamchisiz. O‘zbek tilida aniq va amaliy javob bering. Xavfli yoki bajarilmagan ishni bajarildi deb ko‘rsatmang.",messages:[{role:"user",content:prompt}]})});
  const j=await r.json(); if(!r.ok) throw new Error(j.error?.message||"Claude API xatosi"); return (j.content||[]).filter(x=>x.type==="text").map(x=>x.text).join("\n");
 }
-async function askOpenAI(prompt){
+async function askGateway(prompt){\n const r=await fetch(AI_GATEWAY_URL.replace(/\\/+$/, "")+"/chat/completions",{method:"POST",headers:{"content-type":"application/json","authorization":"Bearer "+AI_GATEWAY_TOKEN},body:JSON.stringify({model:AI_GATEWAY_MODEL,messages:[{role:"system",content:"Siz AGENTLAR OFISI tizimidagi yordamchisiz. O‘zbek tilida aniq va amaliy javob bering."},{role:"user",content:prompt}]})});\n const j=await r.json(); if(!r.ok) throw new Error(j.error?.message||"AI Gateway xatosi"); return j.choices?.[0]?.message?.content||"Javob olinmadi";\n}\nasync function askOpenAI(prompt){
  const r=await fetch("https://api.openai.com/v1/chat/completions",{method:"POST",headers:{"content-type":"application/json","authorization":"Bearer "+OPENAI_API_KEY},body:JSON.stringify({model:process.env.OPENAI_MODEL||"gpt-4.1-mini",messages:[{role:"system",content:"Siz AGENTLAR OFISI tizimidagi yordamchisiz. O‘zbek tilida aniq va amaliy javob bering."},{role:"user",content:prompt}]})});
  const j=await r.json(); if(!r.ok) throw new Error(j.error?.message||"OpenAI API xatosi"); return j.choices?.[0]?.message?.content||"Javob olinmadi";
 }
@@ -39,21 +42,21 @@ const server=http.createServer(async(req,res)=>{
  if(req.method==="GET" && url.pathname==="/"){return fs.createReadStream(path.join(__dirname,"public/index.html")).pipe(res);}
  if(req.method==="GET" && url.pathname==="/api/status"){
    if(!authorized(req)) return json(res,401,{error:"Parol noto‘g‘ri"});
-   const d=load(); return json(res,200,{agents,events:d.events.slice(-40).reverse(),tasks:d.tasks.slice(-30).reverse(),providers:{claude:!!CLAUDE_API_KEY,openai:!!OPENAI_API_KEY}});
+   const d=load(); return json(res,200,{agents,events:d.events.slice(-40).reverse(),tasks:d.tasks.slice(-30).reverse(),providers:{claude:!!CLAUDE_API_KEY,openai:!!OPENAI_API_KEY,gateway:!!AI_GATEWAY_URL&&!!AI_GATEWAY_TOKEN}});
  }
  if(req.method==="POST" && url.pathname==="/api/command"){
    if(!authorized(req)) return json(res,401,{error:"Parol noto‘g‘ri"});
    try{
-    const b=await body(req); const prompt=String(b.prompt||"").trim(); const provider=b.provider==="openai"?"openai":"claude";
+    const b=await body(req); const prompt=String(b.prompt||"").trim(); const provider=["openai","gateway"].includes(b.provider)?b.provider:"claude";
     if(!prompt) return json(res,400,{error:"Vazifa matnini kiriting"});
     const agent=agents.find(a=>a.id===b.agent)||chooseAgent(prompt);
     if(provider==="claude"&&!CLAUDE_API_KEY) return json(res,400,{error:"ANTHROPIC_API_KEY serverda sozlanmagan"});
-    if(provider==="openai"&&!OPENAI_API_KEY) return json(res,400,{error:"OPENAI_API_KEY serverda sozlanmagan"});
+    if(provider==="openai"&&!OPENAI_API_KEY) return json(res,400,{error:"OPENAI_API_KEY serverda sozlanmagan"});\n    if(provider==="gateway"&&(!AI_GATEWAY_URL||!AI_GATEWAY_TOKEN)) return json(res,400,{error:"AI_GATEWAY_URL yoki AI_GATEWAY_TOKEN serverda sozlanmagan"});
     const id=Date.now().toString(36); const d=load();
     const task={id,agent:agent.name,agentId:agent.id,provider,status:"working",prompt,createdAt:new Date().toISOString()};
     d.tasks.push(task); d.events.push({id,agent:agent.name,text:"Vazifani qabul qildi",at:task.createdAt}); save(d);
     try{
-      const result=provider==="claude"?await askClaude("Sizning lavozimingiz: "+agent.role+". Vazifa: "+prompt):await askOpenAI("Sizning lavozimingiz: "+agent.role+". Vazifa: "+prompt);
+      const fullPrompt="Sizning lavozimingiz: "+agent.role+". Vazifa: "+prompt;\n      const result=provider==="claude"?await askClaude(fullPrompt):provider==="gateway"?await askGateway(fullPrompt):await askOpenAI(fullPrompt);
       task.status="done"; task.result=result; task.finishedAt=new Date().toISOString();
       d.events.push({id,agent:agent.name,text:"Vazifani yakunladi",at:task.finishedAt}); save(d);
       return json(res,200,{task});
