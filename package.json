@@ -1,0 +1,12 @@
+{
+  "name": "agentlar-ofisi-cloud",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mobile-first cloud AI agents office",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
